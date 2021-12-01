@@ -1,43 +1,82 @@
-from paho.mqtt import client as mqtt_client
+import json
+import requests
+import paho.mqtt.client as mqtt
 
 broker = 'eu1.cloud.thethings.network'
-port = 1883
-topic = "v3/project-software-engineering@ttn/devices/py-saxion/up"
-
-# generate client ID with pub prefix randomly
-client_id = f'python-mqtt-{1}'
+port = 8883
 
 username = 'project-software-engineering@ttn'
 password = 'NNSXS.DTT4HTNBXEQDZ4QYU6SG73Q2OXCERCZ6574RVXI.CQE6IG6FYNJOO2MOFMXZVWZE4GXTCC2YXNQNFDLQL4APZMWU6ZGA'
 
 
-def connect_mqtt() -> mqtt_client:
-    def on_connect(client, userdata, flags, rc):
-        if rc == 0:
-            print("Connected to MQTT Broker!")
-        else:
-            print("Failed to connect, return code %d\n", rc)
+# The callback for when the client receives a CONNACK response from the server.
+def on_connect(client, userdata, flags, rc):
+    print("Connected with result code " + str(rc))
 
-    client = mqtt_client.Client(client_id)
-    client.username_pw_set(username, password)
-    client.on_connect = on_connect
-    client.connect(broker, port)
-    return client
+    # Subscribing in on_connect() means that if we lose the connection and
+    # reconnect then subscriptions will be renewed.
+    client.subscribe("#")
 
 
-def subscribe(client: mqtt_client):
-    def on_message(client, userdata, msg):
-        print(f"Received `{msg.payload}` from `{msg.topic}` topic")
+# The callback for when a PUBLISH message is received from the server.
+def on_message(client, userdata, msg):
+    # print(msg.topic + " " + str(msg.payload))
 
-    client.subscribe(topic)
-    client.on_message = on_message
+    data = json.loads(msg.payload)
+
+    end_device_id = data['end_device_ids']
+    device_id = end_device_id['device_id']
+
+    if "py" in device_id:
+        print("This is a py device")
+
+        temperature = data['uplink_message']['decoded_payload']['temperature']
+        pressure = data['uplink_message']['decoded_payload']['pressure']
+        light = data['uplink_message']['decoded_payload']['light']
+        time_str = data['received_at']
+
+        # Temporary variable to store time string
+        temp = ""
+
+        # Parse time string
+        for character in time_str:
+            if character == '.':
+                break
+            else:
+                temp += character
+
+        time_str = temp
+
+        print("Device ID: ", device_id)
+        print("Temperature: ", temperature)
+        print("Light: ", light)
+        print("Pressure: ", pressure)
+        print("Time: ", time_str)
+
+        url = "https://weatherinfopset-6db9.restdb.io/rest/weather-data-py"
+
+        payload = json.dumps(
+            {"device_name": device_id, "temperature": temperature, "pressure": pressure, "light": light,
+             "timestamp": time_str})
+        headers = {
+            'content-type': "application/json",
+            'x-apikey': "93af08f6121ad55e76feef3fc1ae242eb2673",
+            'cache-control': "no-cache"
+        }
+
+        response = requests.request("POST", url, data=payload, headers=headers)
+
+        print(response.text)
+
+    if "lht" in device_id:
+        print("This is a lht device")
 
 
-def run():
-    client = connect_mqtt()
-    subscribe(client)
-    client.loop_forever()
+client = mqtt.Client()
+client.tls_set()
+client.on_connect = on_connect
+client.on_message = on_message
+client.username_pw_set(username, password)
 
-
-if __name__ == '__main__':
-    run()
+client.connect(broker, int(port), 60)
+client.loop_forever()
