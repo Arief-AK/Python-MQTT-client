@@ -1,3 +1,4 @@
+import base64
 import json
 import requests
 import paho.mqtt.client as mqtt
@@ -15,13 +16,114 @@ port = 8883
 username = 'project-software-engineering@ttn'
 password = 'NNSXS.DTT4HTNBXEQDZ4QYU6SG73Q2OXCERCZ6574RVXI.CQE6IG6FYNJOO2MOFMXZVWZE4GXTCC2YXNQNFDLQL4APZMWU6ZGA'
 
-# The callback when client receives a response from the server
-def on_connect(client, userdata, flags, rc):
-    if rc == 0:
-        print("Successfully connected to MQTT broker")
+class LhtSensor:
+    def __init__(self, device_id, data):
+        self.device_id = device_id
+        self.data = data
 
-        # reconnect then subscriptions will be renewed.
-        client.subscribe("#")
+    # Parse lht-data using raw payload
+    def parse_lht_raw_payload(self, data):
+        raw_payload = data['uplink_message']['frm_payload']
+
+        b_payload = raw_payload.encode('ascii')
+        decoded_b64payload = base64.b64decode(b_payload)
+
+        # Battery status
+        value = (decoded_b64payload[0] << 8 | decoded_b64payload[1]) & 0x3FFF
+        bat_v = value / 1000
+
+        # Temperature in degrees
+        value = decoded_b64payload[2] << 8 | decoded_b64payload[3]
+        if decoded_b64payload[2] & 0x80:
+            value |= 0xFFFF0000
+
+        temp_sht = (value / 100)
+
+        # Humidity in percentage
+        value = decoded_b64payload[4] << 8 | decoded_b64payload[5]
+        hum_sht = (value / 10)
+
+        return temp_sht, hum_sht, bat_v
+
+    # Parse lht-data using decoded payload
+    def parse_lht_decoded_payload(self, data):
+        temperature = data['uplink_message']['decoded_payload']['TempC_SHT']
+        humidity = data['uplink_message']['decoded_payload']['Hum_SHT']
+        light = data['uplink_message']['decoded_payload']['ILL_lx']
+        battery_p = data['uplink_message']['decoded_payload']['BatV']
+        time_str = data['received_at']
+
+        longitude = data['uplink_message']['rx_metadata'][0]['location']['longitude']
+        latitude = data['uplink_message']['rx_metadata'][0]['location']['latitude']
+        gateway_id = data['uplink_message']['rx_metadata'][0]['gateway_ids']['gateway_id']
+
+        time_str = parse_timestamp(time_str)
+
+        return temperature, humidity, light, battery_p, time_str, latitude, longitude, gateway_id
+
+    # Parsing for the lht-modules
+    def parse_lht(self):
+        tbp_lht = self.data
+
+        end_device_id = tbp_lht['end_device_ids']
+        device_id = end_device_id['device_id']
+
+        # Parse with raw payload
+        raw_temp, raw_hum, raw_bat_v = self.parse_lht_raw_payload(self.data)
+
+        # Parse with decoded payload
+        temperature, humidity, light, battery_p, time_str, latitude, longitude, gateway_id \
+            = self.parse_lht_decoded_payload(self.data)
+
+        print("\nRaw payload:")
+
+        print("\nDevice ID: ", device_id)
+        print("Temperature: ", raw_temp)
+        print("Humidity: ", raw_hum)
+        print("Timestamp:", time_str)
+        print("Gateway ID: ", gateway_id)
+        print("Battery percentage: ", raw_bat_v, "%")
+
+        print("\nDecoded payload:")
+
+        print("\nDevice ID: ", device_id)
+        print("Temperature: ", temperature)
+        print("Humidity: ", humidity)
+        print("Light: ", light)
+        print("Timestamp:", time_str)
+        print("Latitude: ", latitude)
+        print("Longitude: ", longitude)
+        print("Gateway ID: ", gateway_id)
+        print("Battery percentage: ", battery_p, "%")
+
+        # Store to the database
+        push_database("weather-data-lht", device_id, temperature, "", light, humidity, time_str)
+
+class PySensor:
+    def __init__(self, device_id, data):
+        self.device_id = device_id
+        self.data = data
+
+    # Parsing for the py-modules
+    def parse_py(self):
+        end_device_id = self.data['end_device_ids']
+        device_id = end_device_id['device_id']
+
+        temperature = self.data['uplink_message']['decoded_payload']['temperature']
+        pressure = self.data['uplink_message']['decoded_payload']['pressure']
+        light = self.data['uplink_message']['decoded_payload']['light']
+        time_str = self.data['received_at']
+
+        time_str = parse_timestamp(time_str)
+
+        print("Device ID: ", device_id)
+        print("Temperature: ", temperature)
+        print("Light: ", light)
+        print("Pressure: ", pressure)
+        print("Time: ", time_str)
+
+        # Store to the database
+        push_database("weather-data-py", device_id, temperature, pressure, light, "", time_str)
 
 # HELPER FUNCTIONS:
 def parse_timestamp(time_str):
@@ -47,6 +149,14 @@ def parse_timestamp(time_str):
             temp += character
 
     return temp
+
+# The callback when client receives a response from the server
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Successfully connected to MQTT broker")
+
+        # reconnect then subscriptions will be renewed.
+        client.subscribe("#")
 
 # Storing to the web database using an API call
 def push_database(url_id, device_id, temperature, pressure, light, humidity, time_str):
@@ -81,49 +191,6 @@ def push_database(url_id, device_id, temperature, pressure, light, humidity, tim
 
         print(response.text)
 
-# Parsing for the lht-modules
-def parse_lht(data):
-    tbp_lht = data
-
-    end_device_id = tbp_lht['end_device_ids']
-    device_id = end_device_id['device_id']
-
-    temperature = data['uplink_message']['decoded_payload']['TempC_SHT']
-    humidity = data['uplink_message']['decoded_payload']['Hum_SHT']
-    light = data['uplink_message']['decoded_payload']['ILL_lx']
-    time_str = data['received_at']
-
-    time_str = parse_timestamp(time_str)
-
-    print("\nDevice ID: ", device_id)
-    print("Temperature: ", temperature)
-    print("Humidity: ", humidity)
-    print("Light: ", light)
-    print("Timestamp:", time_str)
-
-    push_database("weather-data-lht", device_id, temperature, "", light, humidity, time_str)
-
-# Parsing for the py-modules
-def parse_py(data):
-
-    end_device_id = data['end_device_ids']
-    device_id = end_device_id['device_id']
-
-    temperature = data['uplink_message']['decoded_payload']['temperature']
-    pressure = data['uplink_message']['decoded_payload']['pressure']
-    light = data['uplink_message']['decoded_payload']['light']
-    time_str = data['received_at']
-
-    time_str = parse_timestamp(time_str)
-
-    print("Device ID: ", device_id)
-    print("Temperature: ", temperature)
-    print("Light: ", light)
-    print("Pressure: ", pressure)
-    print("Time: ", time_str)
-
-    push_database("weather-data-py", device_id, temperature, pressure, light, "", time_str)
-
 # The callback for when a message is received from the server.
 def on_message(client, userdata, msg):
 
@@ -133,10 +200,13 @@ def on_message(client, userdata, msg):
     device_id = end_device_id['device_id']
 
     if "py" in device_id:
-        parse_py(data)
+        py_sensor = PySensor(device_id,data)
+        py_sensor.parse_py()
 
     if "lht" in device_id:
-        parse_lht(data)
+
+        lht_sensor = LhtSensor(device_id, data)
+        lht_sensor.parse_lht()
 
 client = mqtt.Client()
 client.tls_set()
