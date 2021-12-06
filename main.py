@@ -2,6 +2,8 @@ import base64
 import json
 import requests
 import paho.mqtt.client as mqtt
+import mysql.connector
+from mysql.connector import Error
 
 # API call information
 # 1 hour -> 20 API calls
@@ -96,7 +98,10 @@ class LhtSensor:
         print("Gateway ID: ", gateway_id)
         print("Battery percentage: ", battery_p, "%")
 
-        # Store to the database
+        # Store to local database
+        send_to_local_database(local_db_client, device_id, temperature, "", light, humidity, time_str)
+
+        # Store to the web-database
         push_database("weather-data-lht", device_id, temperature, "", light, humidity, time_str)
 
 class PySensor:
@@ -122,7 +127,10 @@ class PySensor:
         print("Pressure: ", pressure)
         print("Time: ", time_str)
 
-        # Store to the database
+        # Store to local database
+        send_to_local_database(local_db_client, device_id, temperature, pressure, light, "", time_str)
+
+        # Store to web-database
         push_database("weather-data-py", device_id, temperature, pressure, light, "", time_str)
 
 # HELPER FUNCTIONS:
@@ -157,6 +165,46 @@ def on_connect(client, userdata, flags, rc):
 
         # reconnect then subscriptions will be renewed.
         client.subscribe("#")
+
+# Function to initialise connection to the local database
+def initialise_local_connection():
+    mydb = mysql.connector.connect(
+        host='192.168.68.108',
+        user='arief',
+        password='SaxionTest',
+        database='PSET_test_db',
+        port='8455'
+    )
+
+    return mydb
+
+# Function to send data to the local database
+def send_to_local_database(db_connector, name, temp, press, light, humidity, time):
+    db_cursor = db_connector.cursor()
+
+    query = "DEFAULT"
+    args = ()
+
+    if 'py' in name:
+        query = "INSERT INTO PyData(device_name,temperature,pressure,light,timestamp) values (%s,%s,%s,%s,%s)"
+        args = (name, temp, press, light, time)
+
+    if 'lht' in name:
+        query = "INSERT INTO LhtData(device_name,temperature,humidity,light,timestamp) values (%s,%s,%s,%s,%s)"
+        args = (name, temp, humidity, light, time)
+
+    try:
+
+        db_cursor.execute(query, args)
+        db_connector.commit()
+
+        print("Successfully updated the database")
+
+    except Error as error:
+        print(error)
+
+    finally:
+        db_cursor.close()
 
 # Storing to the web database using an API call
 def push_database(url_id, device_id, temperature, pressure, light, humidity, time_str):
@@ -208,6 +256,7 @@ def on_message(client, userdata, msg):
         lht_sensor = LhtSensor(device_id, data)
         lht_sensor.parse_lht()
 
+local_db_client = initialise_local_connection()
 client = mqtt.Client()
 client.tls_set()
 client.on_connect = on_connect
